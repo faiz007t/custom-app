@@ -1,4 +1,4 @@
 
 config ttl
-	option mode '64'
+	option mode '65'
 

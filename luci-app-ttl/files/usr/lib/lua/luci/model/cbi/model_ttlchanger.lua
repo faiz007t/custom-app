@@ -1,54 +1,48 @@
-local fs = require "nixio.fs"
+local fs  = require "nixio.fs"
 local uci = require "luci.model.uci".cursor()
 local sys = require "luci.sys"
 
 local config_file = "/etc/nftables.d/10-custom-filter-chains.nft"
 local m = Map("ttlchanger", "TTL Settings", "Configure IPv4 TTL and IPv6 Hop Limit manipulation through nftables.")
 
--- Ensure config section exists with correct field name
-if not uci:get_first("ttlchanger", "ttl") then
-    uci:section("ttlchanger", "ttl", nil, { mode = "off", value = "64" })
+-- Ensure config section exists with correct field name and default values (mode = "on", value = 64)
+if not uci:get_first("ttlchanger", "on") then
+    uci:section("ttlchanger", "on", nil, { mode = "on", value = "64" })
     uci:commit("ttlchanger")
 end
 
-local s = m:section(TypedSection, "ttl", "")
+local s = m:section(TypedSection, "on", "")
 s.anonymous = true
 
+-- TTL Mode Option
 local mode = s:option(ListValue, "mode", "TTL Mode")
-mode.default = "ttl"
+mode.default = "on"
 mode:value("off", "Off")
-mode:value("ttl", "Set TTL")
+mode:value("on", "On")
 
+-- Set TTL Value Option
 local ttl_value = s:option(Value, "value", "Set TTL Value")
 ttl_value.datatype = "uinteger"
-ttl_value.default = "65"
-ttl_value:depends("mode", "ttl")
-
-local html_table = s:option(DummyValue, "_html_table", "")
-html_table.rawhtml = true
-html_table.value = [[
-<table class="table table-striped">
-  <tr>
-    <td><strong>Reboot</strong></td>
-    <td>
-      <form method="post">
-        <input class="cbi-button cbi-button-apply" type="submit" name="cbi.reboot" value="Reboot Now" aria-label="Reboot Now" />
-      </form>
-    </td>
-  </tr>
-</table>
-]]
-
-if luci.http.formvalue("cbi.reboot") then
-    sys.call("/sbin/reboot")
-end
+ttl_value.default = "64"
+ttl_value:depends("mode", "on")
 
 function m.on_commit(map)
-    local mode_val = uci:get("ttlchanger", "@ttl[0]", "mode") or "off"
-    local ttl_val = tonumber(uci:get("ttlchanger", "@ttl[0]", "value")) or 65
+    local mode_val = uci:get("ttlchanger", "@on[0]", "mode") or "on"
+    local ttl_val
+
+    if mode_val == "on" then
+        ttl_val = 64
+        uci:set("ttlchanger", "@on[0]", "value", 64)
+        uci:commit("ttlchanger")
+    else
+        math.randomseed(os.time())
+        ttl_val = math.random(1, 150)
+        uci:set("ttlchanger", "@on[0]", "value", ttl_val)
+        uci:commit("ttlchanger")
+    end
 
     local function get_chain(name, rule)
-        return string.format([[ 
+        return string.format([[
 chain %s {
   type filter hook %s priority 300; policy accept;
   counter%s
@@ -56,8 +50,8 @@ chain %s {
 ]], name, name:match("prerouting") and "prerouting" or "postrouting", rule and (" " .. rule) or "")
     end
 
-    local ttl_rule = (mode_val == "ttl") and ("ip ttl set " .. ttl_val) or nil
-    local hop_rule = (mode_val == "ttl") and ("ip6 hoplimit set " .. ttl_val) or nil
+    local ttl_rule = "ip ttl set " .. ttl_val
+    local hop_rule = "ip6 hoplimit set " .. ttl_val
 
     local new_rules = table.concat({
         get_chain("mangle_prerouting_ttl64", ttl_rule),
@@ -86,6 +80,7 @@ chain %s {
 
     fs.writefile(config_file, updated .. "\n" .. new_rules .. "\n")
     sys.call("/etc/init.d/nftables restart")
+    sys.call("/sbin/reboot")  -- Automatically reboot after applying TTL changes
 end
 
 return m
